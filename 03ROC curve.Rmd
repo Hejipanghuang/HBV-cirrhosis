@@ -1,0 +1,224 @@
+---
+title: "ROC curve"
+author: "Liu Yuwei"
+date: '2022-05-20'
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## ID conversion
+```{r}
+rm(list = ls())
+library(GEOquery)
+gse_number = "GSE84044"
+eSet <- getGEO(gse_number, 
+               destdir = '.', 
+               getGPL = F)
+class(eSet)
+length(eSet)
+eSet = eSet[[1]]
+exp <- exprs(eSet)
+pd <- pData(eSet)
+p = identical(rownames(pd),colnames(exp));p
+if(!p) exp = exp[,match(rownames(pd),colnames(exp))]
+gpl_number <- eSet@annotation
+pd1=pd[!pd$`scheuer score s:ch1`=="0"&!pd$`scheuer score g:ch1`=="0",]
+p = identical(colnames(exp),rownames(pd1));p
+if(!p)exp = exp[,match(rownames(pd1),colnames(exp))]
+dim(exp)
+dat=exp
+dat=as.data.frame(dat)
+ids <- AnnoProbe::idmap('GPL570')
+dat$probe_id=rownames(dat)
+dim(dat)
+id_symbol_expr<-na.omit(merge(x=dat,y=ids,by="probe_id",all.x=T))
+id_symbol_expr= id_symbol_expr[!duplicated(id_symbol_expr$symbol),]
+ids=id_symbol_expr[id_symbol_expr$symbol != 'NA',]
+colnames(id_symbol_expr)
+dat=id_symbol_expr
+row.names(dat)=dat$symbol
+dat=dat[,-1]
+dat=dat[,-71]
+save(dat,pd1,exp,file = "step1output.Rdata")
+```
+
+## Group
+
+```{r}
+rm(list = ls())
+load(file = "step1output.Rdata")
+library(stringr)
+library(tinyarray)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+pd=pd1
+##生成分组向量
+#G分组
+group_list1<-ifelse(
+  str_detect(pd$`scheuer score g:ch1`,"1"),"G1",
+  ifelse(
+    str_detect(pd$`scheuer score g:ch1`,"2"),"G2",
+    ifelse(
+      str_detect(pd$`scheuer score g:ch1`,"3"),"G3","G4"
+      )
+    )
+  )
+group_list1=factor(group_list1,levels = c("G1","G2","G3","G4"))
+group_list1
+#S分组
+group_list2<-ifelse(
+  str_detect(pd$`scheuer score s:ch1`,"1"),"S1",
+  ifelse(
+    str_detect(pd$`scheuer score s:ch1`,"2"),"S2",
+    ifelse(
+      str_detect(pd$`scheuer score s:ch1`,"3"),"S3","S4"
+    )
+  )
+)
+group_list2=factor(group_list2,levels = c("S1","S2","S3","S4"))
+group_list2
+
+##用于做ROC曲线的分组
+#S分组
+S4group<-ifelse(str_detect(pd$`scheuer score s:ch1`,"4"),
+                "1","0")
+
+S4group
+
+S3group<-ifelse(pd$`scheuer score s:ch1`%in% c("3","4"),
+                "1","0")
+
+S3group
+#G分组
+G4group<-ifelse(str_detect(pd$`scheuer score g:ch1`,"4"),
+                "G4","NG4")
+G4group<-factor(G4group,levels=c("NG4","G4"))
+G4group
+
+G3group<-ifelse(pd$`scheuer score g:ch1`%in% c("3","4"),
+                "G3","NG3")
+G3group<-factor(G3group,levels=c("NG3","G3"))
+G3group
+save(group_list1,group_list2,S3group,S4group,G3group,G4group,
+     file = "step2output.Rdata")
+```
+##ROC curve
+```{r}
+rm(list = ls())
+load(file = "step2output.Rdata")
+load(file = "step3output.Rdata")
+##筛选出目标基因所在的行
+exp=dat
+exp$symbol=rownames(exp)
+exp=exp[exp$symbol%in%c("SPARC","THBS2","LUM","DCN","IGFBP7","ITGAV","COL1A1"),]
+#转置
+exp=t(exp)
+#去掉最后一行
+exp=exp[-71,]
+class(exp)
+exp=as.data.frame(exp)
+exp=apply(exp,2,as.numeric)
+exp=as.data.frame(exp)
+exp=mutate(exp,S4group)
+exp1=exp
+#画ROC曲线
+library(pROC)
+genes=c("COL1A1","THBS2","LUM","SPARC","ITGAV","DCN","IGFBP7") ##选择要研究的指标
+if(T){
+  FML <- as.formula(paste0('S4group~',paste(genes,collapse = '+')))
+  FML
+  multifit<-glm(FML,family=binomial(), data = exp1)
+  exp1$Comb<-predict.glm(multifit,type = "link")
+  genes<-c(genes,"Comb")
+  genes
+}
+colnames(exp1)
+FML <- as.formula(paste0('S4group~',paste(genes,collapse = '+')))
+
+rr<-roc(FML, data=exp1,smooth=F,ci=T)  ##ci Compute confidence intervals of a ROC curve
+lab<-c()
+for (i in 1:length(genes)) {
+  lab[i]<-paste(genes[i],round(rr[[i]]$auc,3),"95% CI:",round(rr[[i]]$ci[1],3),"-",round(rr[[i]]$ci[3],3))
+}
+library(ggplot2)
+library(ggsci)
+p=ggroc(rr, linetype=1,size=0.6,legacy.axes =TRUE)+
+  theme_bw() +
+  ylim(0,1)+
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed")+
+  theme(legend.position = c(0.8,0.2),legend.background = element_blank())+
+  scale_colour_jco(name="AUC",labels=lab,limits=genes)
+p
+roc.test(rr[["COL1A1"]],rr[["SPARC"]], method = "delong")
+```
+
+##Predictive Models Cobstruction
+```{r}
+rm(list = ls())
+load(file = "step2output.Rdata")
+load(file = "step3output.Rdata")
+exp=dat
+##筛选出目标基因所在的行
+exp$symbol=rownames(exp)
+exp=exp[exp$symbol%in%c("SPARC","THBS2","LUM","DCN","IGFBP7","ITGAV"),]
+#转置
+exp=t(exp)
+#去掉最后一行
+exp=exp[-71,]
+class(exp)
+exp=as.data.frame(exp)
+exp=mutate(exp,S3group)
+exp=apply(exp,2,as.numeric)
+exp=as.data.frame(exp)
+
+##开始进行lasso回归
+x=as.matrix(exp[,1:6])
+y=exp[,7]
+library(glmnet)
+set.seed(1006)
+cv_fit <- cv.glmnet(x=x, y=y)
+plot(cv_fit)
+
+fit <- glmnet(x=x, y=y)
+plot(fit,xvar = "lambda")
+cv_fit$glmnet.fit
+model_lasso_min <- glmnet(x=x, y=y,lambda=0)
+model_lasso_1se <- glmnet(x=x, y=y,lambda=cv_fit$lambda.1se)
+head(model_lasso_min$beta,20)
+choose_gene_min=rownames(model_lasso_min$beta)[as.numeric(model_lasso_min$beta)!=0]
+choose_gene_1se=rownames(model_lasso_1se$beta)[as.numeric(model_lasso_1se$beta)!=0]
+length(choose_gene_min)
+length(choose_gene_1se)
+
+
+lasso.prob <- predict(cv_fit, newx=x , s=c(0,cv_fit$lambda.1se) )
+re=cbind(y ,lasso.prob)
+head(re,20)
+re=as.data.frame(re)
+colnames(re)=c('event','prob_min','prob_1se')
+re$event=as.factor(re$event)
+
+library(pROC)
+library(ggplot2)
+library(ggsci)
+m <- roc(exp$S3group, re$prob_min)
+g <- ggroc(m,legacy.axes = T,size = 1,color = "#2fa1dd")
+auc(m)
+g=g +theme_bw()+
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), 
+               colour = "grey", linetype = "dashed")+
+  annotate("text",x = .75, y = .25,
+           label = paste("AUC = ",format(round(as.numeric(auc(m)),3),nsmall = 3)),color = "black")
+g
+library(eoffice)
+topptx(g,filename = "p1.pptx")
+ci(m,of="auc")
+```
+
