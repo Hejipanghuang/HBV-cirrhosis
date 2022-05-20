@@ -1,0 +1,227 @@
+---
+title: "Generate an expression matrix,Match probes,WGCNA analysis, Correlation between these modules"
+author: "Liu Yuwei"
+date: "2022/5/20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## start Geo database
+```{r cars}
+rm(list = ls())
+library(GEOquery)
+gse_number = "GSE84044"
+eSet <- getGEO(gse_number, 
+               destdir = '.', 
+               getGPL = F)
+eSet = eSet[[1]]
+exp <- exprs(eSet)
+exp[1:4,1:4]
+dat=exp
+pdata<-pData(eSet)
+pd=pdata
+pd1=pd[!pd$`scheuer score s:ch1`=="0",]
+pd1=pd1[!pd1$`scheuer score g:ch1`=="0",]
+pd=pd1
+p = identical(colnames(dat),rownames(pd));p
+if(!p)dat = dat[,match(rownames(pd),colnames(dat))]
+dat=as.data.frame(dat)
+gpl_number <- eSet@annotation
+find_anno(gpl_number)
+ids <- AnnoProbe::idmap('GPL570')
+head(rownames(dat))
+dat$probe_id=rownames(dat)
+id_symbol_expr<-na.omit(merge(x=dat,y=ids,by='probe_id',all.x=T))
+id_symbol_expr= id_symbol_expr[!duplicated(id_symbol_expr$symbol),]
+ids=id_symbol_expr[id_symbol_expr$symbol != 'NA',]
+colnames(id_symbol_expr)
+dat=id_symbol_expr
+row.names(dat)=dat$symbol
+dat=dat[,-1]
+dat=dat[,-71]
+pdata=pd
+```
+
+## Sample Tree
+```{r}
+for (i in 1:70) {
+  dat=dat[which(dat[,i]>0),]
+}
+dim(dat)
+dat$mean=apply(dat,1,mean)
+dat=dat[order(dat$mean,decreasing = TRUE),]
+five=dat[1:5000,]
+five=t(five)
+five=as.data.frame(five)
+five=five[-71,]
+datExpr_tree <- hclust(dist(five), method = "average")
+par(mar = c(0,5,2,0))
+plot(datExpr_tree, main = "Sample clustering", sub = "", xlab = "",
+     cex.axis = 0.9, cex.main = 1.2, cex.lab = 1, cex = 0.7)
+```
+
+## softThreshold
+
+```{r}
+library(WGCNA)
+options(stringsAsFactors = FALSE)
+five=t(five)
+five=as.data.frame(five)
+five=five[-71,]
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+sft = pickSoftThreshold(five, powerVector = powers, verbose = 5)
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.80,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+## Network
+
+```{r}
+cor <- WGCNA::cor
+net = blockwiseModules(five, power = 6,
+                       TOMType = "unsigned", 
+                       minModuleSize = 50,
+                       reassignThreshold = 0,
+                       mergeCutHeight = 0.20,
+                       numericLabels = TRUE,
+                       pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = "cirrhosisTOM", 
+                       verbose = 3)
+cor<-stats::cor
+class(net)
+names(net)
+table(net$colors)
+moduleColors <- labels2colors(net$colors)
+MEs0 = moduleEigengenes(five, moduleColors)$eigengenes
+MEDiss = 1 - cor(MEs0);
+METree = hclust(as.dist(MEDiss), method = "average");
+plot(METree,
+     main = "Clustering of module eigengenes",
+     xlab = "",
+     sub = "")
+MEDissThres = 0.25
+abline(h = MEDissThres, col = "red")
+merge_modules = mergeCloseModules(five, 
+                                  moduleColors, 
+                                  cutHeight = MEDissThres,
+                                  verbose= 3)
+
+mergedColors = merge_modules$colors;
+mergedMEs = merge_modules$newMEs;
+plotDendroAndColors(net$dendrograms[[1]], cbind(moduleColors, mergedColors),
+                    c("Dynamic Tree Cut", "Merged dynamic"),
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+MEDiss1 = 1 - cor(mergedMEs);
+# Cluster module eigengenes
+METree1 = hclust(as.dist(MEDiss1), method = "average");
+plot(METree1,
+     main = "Clustering of module eigengenes",
+     xlab = "",
+     sub = "")
+
+# Tom plot
+nGenes = ncol(five)
+nSamples = nrow(five)
+geneTree = net$dendrograms[[1]]
+dissTOM = 1 - TOMsimilarityFromExpr(five, power = 6)
+nSelect = 400
+set.seed(10)
+select = sample(nGenes, size = nSelect)
+selectTOM = dissTOM[select, select]
+selectTree = hclust(as.dist(selectTOM), method = "average")
+selectColors = mergedColors[select]
+sizeGrWindow(9,9)
+plotDiss = selectTOM^6
+diag(plotDiss) = NA
+TOMplot(plotDiss, selectTree, selectColors, 
+        main = "Network heatmap plot, selected genes",
+        col=gplots::colorpanel(250,'red',"orange",'lemonchiffon'))
+
+
+
+
+```
+
+##Correlation between these modules 
+
+```{r}
+MEs0 = moduleEigengenes(five, mergedColors)$eigengenes
+MEDiss = 1-cor(MEs0);
+METree = hclust(as.dist(MEDiss), method = "average")
+plotEigengeneNetworks(mergedMEs, 
+                      "Eigengene adjacency heatmap", 
+                      marHeatmap = c(3,4,2,2), 
+                      plotDendrograms = FALSE, 
+                      xLabelsAngle = 90)
+
+gene_module <- data.frame(ID=colnames(five), module=mergedColors)
+gene_module = gene_module[order(gene_module$module),]
+```
+
+##Relationship between clinical trait and module
+
+```{r}
+table(pdata$`scheuer score s:ch1`)
+datExpr=five
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+design=model.matrix(~0+pdata$`scheuer score s:ch1` )
+colnames(design)=levels(pdata$`scheuer score s:ch1`)
+library(stringr)
+
+group_list<- ifelse(str_detect(pdata$`scheuer score s:ch1`,"1"), "S1",
+    ifelse(str_detect(pdata$`scheuer score s:ch1`,"2"), "S2",
+      ifelse( str_detect(pdata$`scheuer score s:ch1`,"3"), "S3", "S4"
+      )
+    )
+  )
+colnames(design)=c("s1","s2","s3","s4")
+MEs0 = moduleEigengenes(datExpr, mergedColors)$eigengenes
+MEs = orderMEs(MEs0); 
+file.remove('All_Gene_KME.txt')
+for(module in substring(colnames(MEs),3)){
+  if(module == "grey") next
+  ME=as.data.frame(MEs[,paste("ME",module,sep="")])
+  colnames(ME)=module
+  datModExpr=datExpr[,moduleColors==module]
+  datKME = signedKME(datModExpr, ME)
+  datKME=cbind(datKME,rep(module,length(datKME)))
+  write.table(datKME,quote = F,row.names = T,append = T,file = "All_Gene_KME.txt",col.names = F)
+}
+moduleTraitCor = cor(MEs, design , use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+                   signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix)=dim(moduleTraitCor)
+
+par(mar = c(6, 8.5, 3, 3));
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = colnames(design),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+```
+
