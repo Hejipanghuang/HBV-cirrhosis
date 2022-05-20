@@ -1,0 +1,65 @@
+---
+title: "Functional enrichment analysis,GO and KEGG analysis"
+author: "Liu Yuwei"
+date: "2022/5/20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Functional enrichment analysis 
+```{r cars}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+s2e <- bitr(gene_module$ID, 
+            fromType = "SYMBOL",
+            toType = "ENTREZID",
+            OrgDb = org.Hs.eg.db)
+dim(gene_module)
+deg <- inner_join(gene_module,s2e,by=c("ID"="SYMBOL"))
+dim(deg)
+library(ggthemes)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(enrichplot)
+```
+
+## Go analysis
+
+
+```{r}
+gene_color= deg$ENTREZID[deg$module == 'turquoise'] 
+ego <- enrichGO(gene = gene_color,
+                  OrgDb= org.Hs.eg.db,
+                  ont = "ALL",
+                  readable = TRUE)
+ego_BP <- enrichGO(gene = gene_color,
+                  OrgDb= org.Hs.eg.db,
+                  ont = "BP",
+                  readable = TRUE)
+ego_CC <- enrichGO(gene = gene_color,
+                     OrgDb= org.Hs.eg.db,
+                     ont = "CC",
+                     readable = TRUE)
+ego_MF <- enrichGO(gene = gene_color,
+                     OrgDb= org.Hs.eg.db,
+                     ont = "MF",
+                     readable = TRUE)
+barplot(ego, split = "ONTOLOGY", font.size = 8, 
+        showCategory = 10) + 
+  facet_grid(ONTOLOGY ~ ., space = "free_y",scales = "free_y") + 
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 45))
+```
+
+##KEGG analysis
+```{r}
+kk.color <- enrichKEGG(gene= gene_color,
+                      organism= 'hsa')
+dotplot(kk.color, font.size = 8, showCategory = 10)
+
+```
+
